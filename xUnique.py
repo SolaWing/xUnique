@@ -27,7 +27,6 @@ from json import (loads as json_loads, dump as json_dump)
 from fileinput import (input as fi_input, close as fi_close)
 from re import compile as re_compile
 from sys import (argv as sys_argv, getfilesystemencoding as sys_get_fs_encoding, version_info)
-from collections import deque
 from filecmp import cmp as filecmp_cmp
 from optparse import OptionParser
 
@@ -240,98 +239,162 @@ Please check:
 
     def sort_pbxproj(self, sort_pbx_by_file_name=False):
         self.vprint('sort project.xpbproj file')
-        lines = []
         removed_lines = []
+
         files_start_ptn = re_compile('^(\s*)files = \(\s*$')
         files_key_ptn = re_compile('((?<=[A-Z0-9]{24} \/\* )|(?<=[A-F0-9]{32} \/\* )).+?(?= in )')
-        fc_end_ptn = '\);'
-        files_flag = False
         children_start_ptn = re_compile('^(\s*)children = \(\s*$')
         children_pbx_key_ptn = re_compile('((?<=[A-Z0-9]{24} \/\* )|(?<=[A-F0-9]{32} \/\* )).+?(?= \*\/)')
-        child_flag = False
-        pbx_start_ptn = re_compile('^.*Begin (PBXBuildFile|PBXFileReference) section.*$')
-        pbx_key_ptn = re_compile('^\s+(([A-Z0-9]{24})|([A-F0-9]{32}))(?= \/\*)')
-        pbx_end_ptn = ('^.*End ', ' section.*$')
-        pbx_flag = False
-        last_two = deque([])
+        array_end_ptn = '^{space}\);\s*$'
+
+        pbx_section_start_ptn = re_compile('^\s*\/\*\s*Begin (.+) section.*$')
+        pbx_section_end_ptn =  '^\s*\/\*\s*End {name} section.*$'
+        pbx_section_names = {
+            'PBXGroup',
+            'PBXFileReference',
+            'PBXBuildFile',
+            'PBXContainerItemProxy',
+            'PBXReferenceProxy',
+            'PBXNativeTarget',
+            'PBXTargetDependency',
+            'PBXSourcesBuildPhase',
+            'PBXFrameworksBuildPhase',
+            'PBXResourcesBuildPhase',
+            'PBXCopyFilesBuildPhase',
+            'PBXShellScriptBuildPhase',
+            'XCBuildConfiguration',
+            'XCConfigurationList',
+            'XCVersionGroup',
+            'PBXVariantGroup',
+            'PBXProject',
+        }
+        pbx_section_names_sort_by_name = {'PBXFileReference', 'PBXBuildFile'} if sort_pbx_by_file_name else set()
+        pbx_section_item_ptn = re_compile(r'^(\s*){hex_group}\s+{name_group}\s*=\s*\{{{oneline_end_group}\s*$'.format(
+            hex_group = '((?:[A-Z0-9]{24})|(?:[A-F0-9]{32}))',
+            name_group = r'(?:\/\* (.+?) \*\/)?',
+            oneline_end_group = '(?:.+(};))?'
+        ))
+        pbx_section_item_end_ptn = r"^{space}\}};\s*$"
+
+        empty_line_ptn = re_compile('^\s*$')
 
         def file_dir_order(x):
             x = children_pbx_key_ptn.search(x).group()
             return '.' in x, x
 
-        for line in fi_input(self.xcode_pbxproj_path, backup='.sbak', inplace=1):
-            # project.pbxproj is an utf-8 encoded file
-            line = decoded_string(line, 'utf-8')
-            last_two.append(line)
-            if len(last_two) > 2:
-                last_two.popleft()
-            # files search and sort
+        output_stack = [output_u8line]
+        write = lambda *args: output_stack[-1](*args)
+
+        deal_stack = []
+        deal = lambda line: deal_stack[-1](line)
+
+        def check_section(line):
+            section_match = pbx_section_start_ptn.search(line)
+            if section_match:
+                write(line)
+                section_name = section_match.group(1)
+                if section_name in pbx_section_names:
+                    section_items = []
+                    end_ptn = re_compile(pbx_section_end_ptn.format(name=section_name))
+                    def check_end(line):
+                        end_match = bool(end_ptn.search(line))
+                        if end_match:
+                            if section_items:
+                                section_items.sort(key=lambda item: item[0])
+                                write(''.join( i[1] for i in section_items ))
+                            write(line)
+                            deal_stack.pop()
+                        return end_match
+                    section_item_key_group = 3 if section_name in pbx_section_names_sort_by_name else 2
+                    def deal_section_line(line):
+                        if check_end(line): return
+                        section_item_match = pbx_section_item_ptn.search(line)
+                        if section_item_match:
+                            section_item_key = section_item_match.group(section_item_key_group)
+                            if not section_item_key: section_item_key = ""
+                            if section_item_match.group(4): # oneline item
+                                section_items.append((section_item_key, line))
+                            else: # multiline item
+                                lines = [line]
+                                end_ptn = re_compile(pbx_section_item_end_ptn.format(space=section_item_match.group(1)))
+                                def check_item_end(line):
+                                    end_match = bool(end_ptn.search(line))
+                                    if end_match:
+                                        write(line)
+                                        section_items.append((section_item_key, ''.join(lines)))
+                                        output_stack.pop()
+                                        deal_stack.pop()
+                                    return end_match
+                                def deal_section_item_line(line):
+                                    if check_item_end(line) or check_files(line) or check_children(line):
+                                        return
+                                    write(line)
+                                output_stack.append(lambda line: lines.append(line))
+                                deal_stack.append(deal_section_item_line)
+                        elif empty_line_ptn.search(line): pass
+                        else: raise XUniqueExit("unexpected line:\n{}".format(line))
+                    deal_stack.append(deal_section_line)
+                return True
+            return False
+        def check_files(line):
             files_match = files_start_ptn.search(line)
             if files_match:
-                output_u8line(line)
-                files_flag = True
-                if isinstance(fc_end_ptn, six.text_type):
-                    fc_end_ptn = re_compile(files_match.group(1) + fc_end_ptn)
-            if files_flag:
-                if fc_end_ptn.search(line):
-                    if lines:
-                        lines.sort(key=lambda file_str: files_key_ptn.search(file_str).group())
-                        output_u8line(''.join(lines))
-                        lines = []
-                    files_flag = False
-                    fc_end_ptn = '\);'
-                elif files_key_ptn.search(line):
-                    if line in lines:
-                        removed_lines.append(line)
-                    else:
-                        lines.append(line)
-            # children search and sort
+                write(line)
+                lines = []
+                end_ptn = re_compile(array_end_ptn.format(space=files_match.group(1)))
+                def deal_files(line):
+                    if end_ptn.search(line):
+                        if lines:
+                            lines.sort(key=lambda file_str: files_key_ptn.search(file_str).group())
+                            write(''.join(lines))
+                        write(line)
+                        deal_stack.pop()
+                    elif files_key_ptn.search(line):
+                        if line in lines: removed_lines.append(line)
+                        else: lines.append(line)
+                    elif empty_line_ptn.search(line): pass
+                    else: raise XUniqueExit("unexpected line:\n{}".format(line))
+                deal_stack.append(deal_files)
+                return True
+            return False
+        def check_children(line):
             children_match = children_start_ptn.search(line)
             if children_match:
-                output_u8line(line)
-                child_flag = True
-                if isinstance(fc_end_ptn, six.text_type):
-                    fc_end_ptn = re_compile(children_match.group(1) + fc_end_ptn)
-            if child_flag:
-                if fc_end_ptn.search(line):
-                    if lines:
-                        if self.main_group_hex not in last_two[0]:
+                write(line)
+                lines = []
+                end_ptn = re_compile(array_end_ptn.format(space=children_match.group(1)))
+                def deal_children(line):
+                    if end_ptn.search(line):
+                        if lines:
                             lines.sort(key=file_dir_order)
-                        output_u8line(''.join(lines))
-                        lines = []
-                    child_flag = False
-                    fc_end_ptn = '\);'
-                elif children_pbx_key_ptn.search(line):
-                    if line in lines:
-                        removed_lines.append(line)
-                    else:
-                        lines.append(line)
-            # PBX search and sort
-            pbx_match = pbx_start_ptn.search(line)
-            if pbx_match:
-                output_u8line(line)
-                pbx_flag = True
-                if isinstance(pbx_end_ptn, tuple):
-                    pbx_end_ptn = re_compile(pbx_match.group(1).join(pbx_end_ptn))
-            if pbx_flag:
-                if pbx_end_ptn.search(line):
-                    if lines:
-                        if sort_pbx_by_file_name:
-                            lines.sort(key=lambda file_str: children_pbx_key_ptn.search(file_str).group())
-                        else:
-                            lines.sort(key=lambda file_str: pbx_key_ptn.search(file_str).group(1))
-                        output_u8line(''.join(lines))
-                        lines = []
-                    pbx_flag = False
-                    pbx_end_ptn = ('^.*End ', ' section.*')
-                elif children_pbx_key_ptn.search(line):
-                    if line in lines:
-                        removed_lines.append(line)
-                    else:
-                        lines.append(line)
-            # normal output
-            if not (files_flag or child_flag or pbx_flag):
-                output_u8line(line)
+                            write(''.join(lines))
+                        write(line)
+                        deal_stack.pop()
+                    elif children_pbx_key_ptn.search(line):
+                        if line in lines: removed_lines.append(line)
+                        else: lines.append(line)
+                    elif empty_line_ptn.search(line): pass
+                    else: raise XUniqueExit("unexpected line:\n{}".format(line))
+                deal_stack.append(deal_children)
+                return True
+            return False
+        def deal_global_line(line):
+            if check_section(line) or check_files(line) or check_children(line):
+                return
+            write(line)
+        deal_stack.append(deal_global_line)
+        try:
+            for line in fi_input(self.xcode_pbxproj_path, backup='.sbak', inplace=1):
+                # project.pbxproj is an utf-8 encoded file
+                line = decoded_string(line, 'utf-8')
+                deal(line)
+            assert len(deal_stack) == 1 and len(output_stack) == 1
+        except Exception as e:
+            fi_close()
+            tmp_path = self.xcode_pbxproj_path + '.sbak'
+            unlink(self.xcode_pbxproj_path)
+            rename(tmp_path, self.xcode_pbxproj_path)
+            raise e
         fi_close()
         tmp_path = self.xcode_pbxproj_path + '.sbak'
         if filecmp_cmp(self.xcode_pbxproj_path, tmp_path, shallow=False):
