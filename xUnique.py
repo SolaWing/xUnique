@@ -106,11 +106,13 @@ class XUnique(object):
         self.root_node = self.nodes[self.root_hex]
         self.main_group_hex = self.root_node['mainGroup']
         self.__result = {}
+        root_new_hex = md5_hex(self.proj_root)
+        self.__new_key_path_dict = {root_new_hex : self.proj_root}
         # initialize root content
         self.__result.update(
             {
                 self.root_hex: {'path': self.proj_root,
-                                'new_key': md5_hex(self.proj_root),
+                                'new_key': root_new_hex,
                                 'type': self.root_node['isa']
                                 }
             })
@@ -132,6 +134,18 @@ Please check:
 2. The project file is not broken, such like merge conflicts, incomplete content due to xUnique failure. """.format(
                 cpe.output))
 
+    def __update_result(self, current_hex, path, new_key, atype):
+        old = self.__result.get(current_hex)
+        if old:
+            self.vprint("override", current_hex)
+            self.__new_key_path_dict.pop(old['new_key'], None)
+        while new_key in self.__new_key_path_dict and self.__new_key_path_dict[new_key] != path:
+            self.vprint("hash conflicts old:{} => new:{}".format(current_hex, new_key))
+            new_key = md5_hex(new_key) # rehash to avoid conflicts of different path
+        self.__new_key_path_dict[new_key] = path
+        self.__result[current_hex] = {'path': path, 'new_key': new_key, 'type': atype}
+        return new_key
+
     def __set_to_result(self, parent_hex, current_hex, current_path_key):
         current_node = self.nodes[current_hex]
         isa_type = current_node['isa']
@@ -146,13 +160,7 @@ Please check:
             raise KeyError('current_path_key must be list/tuple/string')
         cur_abs_path = '{}/{}'.format(self.__result[parent_hex]['path'], current_path)
         new_key = md5_hex(cur_abs_path)
-        self.__result.update({
-            current_hex: {'path': '{}[{}]'.format(isa_type, cur_abs_path),
-                          'new_key': new_key,
-                          'type': isa_type
-                          }
-        })
-        return new_key
+        return self.__update_result(current_hex, '{}[{}]'.format(isa_type, cur_abs_path), new_key, isa_type)
 
     def get_proj_root(self):
         """PBXProject name,the root node"""
@@ -501,13 +509,9 @@ Please check:
             else:
                 portal_path = portal_result_hex['path']
                 new_rg_id_path = '{}+{}'.format(cur_path, portal_path)
-                self.__result.update({
-                    remote_global_id_hex: {'path': new_rg_id_path,
-                                           'new_key': md5_hex(new_rg_id_path),
-                                           'type': '{}#{}'.format(self.nodes[container_item_proxy_hex]['isa'],
-                                                                  'remoteGlobalIDString')
-                                           }
-                })
+                self.__update_result(remote_global_id_hex, new_rg_id_path, md5_hex(new_rg_id_path),
+                                     '{}#{}'.format(self.nodes[container_item_proxy_hex]['isa'],
+                                                    'remoteGlobalIDString'))
 
     def __unique_build_phase(self, parent_hex, build_phase_hex):
         """PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase
