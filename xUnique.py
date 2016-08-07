@@ -179,6 +179,15 @@ Please check:
         else:
             raise XUniqueExit("File 'project.pbxproj' is broken. Cannot find PBXProject name.")
 
+    def subproject(self, abspath):
+        if not hasattr(self, '_subproject'):
+            self._subproject = {}
+        sub_proj = self._subproject.get(abspath)
+        if sub_proj is None:
+            sub_proj = XUnique(abspath, self.verbose)
+            self._subproject[abspath] = sub_proj
+        return sub_proj
+
     def unique_project(self):
         """iterate all nodes in pbxproj file:
 
@@ -495,23 +504,39 @@ Please check:
         current_node = self.nodes[container_item_proxy_hex]
         # re-calculate remoteGlobalIDString to a new length 32 MD5 digest
         remote_global_id_hex = current_node.get('remoteGlobalIDString')
-        if not remote_global_id_hex:
-            self.__result.setdefault('uniquify_warning', []).append(
-                "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
-                    self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
-        elif remote_global_id_hex not in self.__result.keys():
+        append_warning = lambda: self.__result.setdefault('uniquify_warning', []).append(
+            "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
+                self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
+        if not remote_global_id_hex: append_warning()
+        elif remote_global_id_hex not in self.__result:
             portal_hex = current_node['containerPortal']
             portal_result_hex = self.__result.get(portal_hex)
-            if not portal_result_hex:
-                self.__result.setdefault('uniquify_warning', []).append(
-                    "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
-                        self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
+            if not portal_result_hex: append_warning()
             else:
-                portal_path = portal_result_hex['path']
-                new_rg_id_path = '{}+{}'.format(cur_path, portal_path)
-                self.__update_result(remote_global_id_hex, new_rg_id_path, md5_hex(new_rg_id_path),
-                                     '{}#{}'.format(self.nodes[container_item_proxy_hex]['isa'],
-                                                    'remoteGlobalIDString'))
+                portal = self.nodes[portal_hex]
+                if portal.get('path'):
+                    abspath = path.join(self.xcodeproj_path, '..', portal['path'])
+                    if abspath == self.xcodeproj_path: return # current project proxy. ignore it
+                    info = current_node.get('remoteInfo')
+                    if info is None: append_warning(); return
+
+                    subproject = self.subproject(abspath)
+                    proxyType = int(current_node.get('proxyType', -1))
+                    if proxyType == 1:
+                        self.__result[remote_global_id_hex] = {
+                            'new_key': next((v for v in subproject.root_node['targets']
+                                             if subproject.nodes[v]['name'] == info),
+                                            remote_global_id_hex)}
+                    elif proxyType == 2:
+                        self.__result[remote_global_id_hex] = {
+                            'new_key': next((subproject.nodes[v]['productReference'] for v in subproject.root_node['targets']
+                                             if subproject.nodes[v]['name'] == info),
+                                            remote_global_id_hex)}
+                    else: # unknown type, ignore it
+                        self.__result.setdefault('uniquify_warning', []).append(
+                            "PBXContainerItemProxy '{}' has unsupported proxyType. don't unique it".format(
+                                remote_global_id_hex))
+                        self.__result[remote_global_id_hex] = {'new_key': remote_global_id_hex}
 
     def __unique_build_phase(self, parent_hex, build_phase_hex):
         """PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase
