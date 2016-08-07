@@ -643,7 +643,7 @@ def main():
     parser.add_option("-s", "--sort", action="store_true", dest="sort_bool", default=False,
                       help="sort the project file. default is False. When neither '-u' nor '-s' option exists, xUnique will invisibly add both '-u' and '-s' in arguments")
     parser.add_option("-c", "--combine-commit", action="store_true", dest="combine_commit", default=False,
-                      help="When project file was modified, xUnique quit with non-zero status. Without this option, the status code would be zero if so. This option is usually used in Git hook to submit xUnique result combined with your original new commit.")
+                      help="When project file was modified, xUnique quit with 100 status. Without this option, the status code would be zero if so. This option is usually used in Git hook to submit xUnique result combined with your original new commit.")
     parser.add_option("-p", "--sort-pbx-by-filename", action="store_true", dest="sort_pbx_fn_bool", default=False,
                       help="sort PBXFileReference and PBXBuildFile sections in project file, ordered by file name. Without this option, ordered by MD5 digest, the same as Xcode does.")
     (options, args) = parser.parse_args(sys_argv[1:])
@@ -667,7 +667,8 @@ def main():
             xunique.sort_pbxproj(options.sort_pbx_fn_bool)
     if options.combine_commit:
         if xunique.is_modified:
-            raise XUniqueExit("File 'project.pbxproj' was modified, please add it and then commit.")
+            warning_print("File 'project.pbxproj' was modified, please add it and then commit.")
+            raise SystemExit(100)
     else:
         if xunique.is_modified:
             warning_print(
