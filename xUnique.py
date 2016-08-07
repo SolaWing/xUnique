@@ -294,6 +294,15 @@ Please check:
         pbx_section_item_end_ptn = r"^{space}\}};\s*$"
 
         empty_line_ptn = re_compile('^\s*$')
+        children_nosort_group = set()
+        try:
+            # projectReferences may order by xcode, don't sort it
+            def get_hex(old_hex):
+                if old_hex in self.__result: return self.__result[old_hex]['new_key']
+                return old_hex
+            for pr in self.root_node['projectReferences']:
+                children_nosort_group.add(get_hex(pr['ProductGroup']))
+        except KeyError as e: pass
 
         def file_dir_order(x):
             x = children_pbx_key_ptn.search(x).group()
@@ -334,6 +343,7 @@ Please check:
                             else: # multiline item
                                 lines = [line]
                                 end_ptn = re_compile(pbx_section_item_end_ptn.format(space=section_item_match.group(1)))
+                                should_sort_children = section_item_match.group(2) not in children_nosort_group
                                 def check_item_end(line):
                                     end_match = bool(end_ptn.search(line))
                                     if end_match:
@@ -343,7 +353,8 @@ Please check:
                                         deal_stack.pop()
                                     return end_match
                                 def deal_section_item_line(line):
-                                    if check_item_end(line) or check_files(line) or check_children(line):
+                                    if check_item_end(line): return
+                                    if should_sort_children and (check_files(line) or check_children(line)):
                                         return
                                     write(line)
                                 output_stack.append(lambda line: lines.append(line))
